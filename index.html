@@ -70,7 +70,7 @@ dialog.panel button:disabled{opacity:.5;cursor:default}
   <button class="primary" id="send-pdf" type="button">Lav PDF</button>
   <button id="clear" type="button">Ryd skema</button>
   <button id="show-hidden" type="button" hidden>Skjulte punkter (0)</button>
-  <span class="ver">Version 11.11.2026 (2)</span>
+  <span class="ver">Version 11.11.2026 (3)</span>
   <span class="status" id="status" role="status"></span>
 </div>
 <div id="sheets"></div>
@@ -741,7 +741,8 @@ const photoBytes=()=>Object.values(photos).flat().reduce((n,p)=>n+p.data.length*
 
 // ---------- Filnavn og mailtekst ----------
 function info(){const d=collect();return{d,address:(d.p1_ejendom||'').trim(),date:(d.p1_dato||'').trim(),inspector:(d.inspektoer||'').trim()};}
-function baseName(){const {address,date}=info();const clean=s=>s.normalize('NFC').replace(/[\\/:*?"<>|,;\s]+/g,'_').replace(/_+/g,'_').replace(/^_|_$/g,'').slice(0,60);return['Ejendomsinspektion',clean(address)||'uden_adresse',clean(date)].filter(Boolean).join('_');}
+// Filnavn = ejendomsnavnet fra "Ejendom / adresse" (tegn, som filsystemer ikke tillader, fjernes).
+function baseName(){const {address}=info();const n=address.normalize('NFC').replace(/[\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').replace(/^[\s.]+|[\s.]+$/g,'').slice(0,80);return n||'Ejendomsinspektion';}
 function subject(){const {address,date}=info();return['Ejendomsinspektion',address||'(adresse ikke angivet)',date].filter(Boolean).join(' – ');}
 
 // ---------- PDF: tegnes i browseren med samme layout ----------
@@ -752,7 +753,7 @@ async function buildPdf(){
   const jsPDF=pdfLib();
   const d=collect();
   const doc=new jsPDF({unit:'pt',format:[W,H],compress:true});
-  doc.setProperties({title:subject(),author:'Forenede Service',subject:'Ejendomsinspektion'});
+  doc.setProperties({title:baseName(),author:'Forenede Service',subject:subject()});
   const overflow=[];
   const font=(size,bold,color)=>{doc.setFont('helvetica',bold?'bold':'normal');doc.setFontSize(size);doc.setTextColor(COLORS[color]||color);};
   pages.forEach((list,pi)=>{
@@ -844,10 +845,18 @@ function showReady(){
   document.getElementById('send-sub').textContent=`${ready.name} (${sizeText(ready.blob.size)}). Tryk "Hent PDF". Send den derefter selv i en ny mail til ${MAILBOX}.`;
   document.getElementById('send-note').textContent=framed
     ?'Skemaet vises inde i en forhåndsvisning, som kan blokere hentning. Virker "Hent PDF" ikke, så åbn skemaet direkte i Safari (eller Edge/Chrome på pc).'
-    :touch?'iPad/iPhone: Tryk "Hent" hvis Safari spørger. Filen ligger i Filer-appen under Overførsler. Kommer den ikke frem, så tryk "Åbn PDF" og brug del-knappen → "Gem i Filer".':'';
+    :touch?'iPad/iPhone: "Del / gem" giver filen det rigtige navn – vælg "Gem i Filer" eller Mail. "Åbn PDF" viser kun filen, og gemmer man derfra, kan navnet blive en kode.':'';
   const box=document.getElementById('send-actions');box.replaceChildren();
   const get=link('Hent PDF','primary',{download:ready.name});
   get.addEventListener('click',()=>{dirty=false;status.textContent=`"${ready.name}" er hentet${touch?' til Filer-appen (Overførsler)':' til mappen Overførsler'}. Vedhæft den i en ny mail til ${MAILBOX}.`;});
+  // iPad/iPhone: "Del / gem" deler filen med sit rigtige navn (Gem i Filer, Mail, Outlook).
+  let canShare=false;try{canShare=touch&&!framed&&!!(navigator.share&&navigator.canShare&&navigator.canShare({files:[ready.file]}));}catch(e){}
+  if(canShare){
+    const share=document.createElement('button');share.type='button';share.className='primary';share.textContent='Del / gem';
+    share.onclick=async()=>{try{await navigator.share({files:[ready.file]});dirty=false;status.textContent=`"${ready.name}" er delt. Send den i en ny mail til ${MAILBOX}, hvis det ikke allerede er gjort.`;sendDlg.close();}
+      catch(e){if(e.name!=='AbortError')document.getElementById('send-note').textContent='Deling lykkedes ikke ('+errText(e)+'). Brug "Hent PDF" i stedet.';}};
+    get.classList.remove('primary');box.append(share);
+  }
   box.append(get);
   if(touch)box.append(link('Åbn PDF','',{target:'_blank',rel:'noopener'}));
   const close=document.createElement('button');close.type='button';close.textContent='Luk';close.onclick=()=>sendDlg.close();box.append(close);
@@ -862,7 +871,8 @@ async function prepare(){
     await new Promise(r=>setTimeout(r,30)); // lad statusteksten blive vist, før PDF'en tegnes
     const blob=await buildPdf();
     if(ready)URL.revokeObjectURL(ready.url);
-    ready={blob,name:baseName()+'.pdf',url:URL.createObjectURL(blob)};
+    const name=baseName()+'.pdf',file=new File([blob],name,{type:'application/pdf'});
+    ready={blob,name,file,url:URL.createObjectURL(file)};
     status.textContent='';
     showReady();
   }catch(e){
