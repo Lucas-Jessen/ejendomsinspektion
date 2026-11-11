@@ -24,7 +24,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);font-family:Helvetica,A
 .bar{left:0;top:0;width:100%;height:8pt;background:var(--blue)}
 .rule{height:0;border-top:.75pt solid var(--line)}
 .logo{width:168pt;height:60pt}
-input.f,textarea.f{border:.7pt solid var(--line);background:#fff;color:var(--ink);font:10pt/1.2 Helvetica,Arial,sans-serif;padding:2pt 4pt;border-radius:0;margin:0;outline:none}
+input.f,textarea.f,select.f{border:.7pt solid var(--line);background:#fff;color:var(--ink);font:10pt/1.2 Helvetica,Arial,sans-serif;padding:2pt 4pt;border-radius:0;margin:0;outline:none}
 textarea.f{resize:none;padding-top:3pt}
 input.f:focus,textarea.f:focus{border-color:var(--blue);box-shadow:0 0 0 1.5pt rgba(38,103,125,.25)}
 .radio,.check{appearance:none;-webkit-appearance:none;width:12pt;height:12pt;margin:0;border:.75pt solid var(--muted);background:#fff;cursor:pointer;display:grid;place-content:center}
@@ -38,6 +38,12 @@ label.t{cursor:pointer}
 .photo-btn{width:52pt;height:11pt;padding:0;font:bold 7pt/1 Helvetica,Arial,sans-serif;color:var(--blue);background:#fff;border:.7pt solid var(--blue);border-radius:6pt;cursor:pointer;white-space:nowrap}
 .photo-btn::after{content:"";position:absolute;inset:-6pt -4pt}
 .photo-btn.has{background:var(--blue);color:#fff}
+.hide-btn{width:52pt;height:11pt;padding:0;font:7pt/1 Helvetica,Arial,sans-serif;color:var(--muted);background:#fff;border:.7pt solid var(--line);border-radius:6pt;cursor:pointer;white-space:nowrap}
+.hide-btn::after{content:"";position:absolute;inset:-6pt -4pt}
+.hide-btn:hover{color:var(--ink);border-color:var(--muted)}
+select.f{appearance:auto;padding:1pt 2pt}
+#hidden-list{list-style:none;margin:0 0 16px;padding:0;max-height:50vh;overflow:auto}
+#hidden-list li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
 .photo-btn:focus-visible{outline:2px solid #67a8b9;outline-offset:2px}
 dialog.panel{width:min(92vw,640px);border:1px solid var(--line);border-radius:12px;padding:20px;color:var(--ink);font-size:14px}
 dialog.panel::backdrop{background:rgba(20,45,52,.55)}
@@ -63,7 +69,8 @@ dialog.panel button:disabled{opacity:.5;cursor:default}
 <div class="toolbar">
   <button class="primary" id="send-pdf" type="button">Lav PDF</button>
   <button id="clear" type="button">Ryd skema</button>
-  <span class="ver">Version 11.11.2026</span>
+  <button id="show-hidden" type="button" hidden>Skjulte punkter (0)</button>
+  <span class="ver">Version 11.11.2026 (2)</span>
   <span class="status" id="status" role="status"></span>
 </div>
 <div id="sheets"></div>
@@ -81,6 +88,15 @@ dialog.panel button:disabled{opacity:.5;cursor:default}
   <p class="sub" id="send-sub"></p>
   <p id="send-note" role="alert"></p>
   <div class="dlg-actions" id="send-actions"></div>
+</dialog>
+<dialog id="hidden-dialog" class="panel" aria-labelledby="hidden-title">
+  <h2 id="hidden-title">Skjulte punkter</h2>
+  <p class="sub">Skjulte punkter kommer ikke med i PDF'en. Udfyldte oplysninger bevares, til punktet vises igen.</p>
+  <ul id="hidden-list"></ul>
+  <div class="dlg-actions">
+    <button type="button" class="primary" id="show-all">Vis alle</button>
+    <button type="button" id="hidden-close">Luk</button>
+  </div>
 </dialog>
 <input type="file" id="photo-input" accept="image/*" multiple hidden>
 <!-- Skemaets data. Når skemaet sendes som HTML, skrives de udfyldte felter ind her. -->
@@ -499,17 +515,26 @@ const W=595.276,H=841.89;
 const COLORS={blue:'#26677D',green:'#3C795F',ink:'#243B43',muted:'#597078',line:'#CAD7DB'};
 
 // ---------- Layout (samme koordinater som PDF-generatoren; y måles fra bunden i pt) ----------
-const pages=[];let ops;
+// Layoutet bygges om, når punkter skjules eller vises, så de resterende punkter rykker op.
+let pages=[],ops;
+const PHOTO_SLOTS=[],pageNoOps=[];
+const hidden=new Set(); // nøgler som 'p1_punkt3' for skjulte punkter
 const newPage=()=>{ops=[];pages.push(ops);};
-const T=(x,y,s,size=10,color='ink',bold=false)=>ops.push({k:'t',x,y,s,size,color,bold});
+const T=(x,y,s,size=10,color='ink',bold=false)=>{const o={k:'t',x,y,s,size,color,bold};ops.push(o);return o;};
 const L=(x1,y,x2)=>ops.push({k:'l',x1,y,x2});
-const F=(name,label,x,y,w,h=22,multi=false,sync)=>ops.push({k:'f',name,label,x,y,w,h,multi,sync});
+const F=(name,label,x,y,w,h=22,multi=false)=>ops.push({k:'f',name,label,x,y,w,h,multi});
+const S=(name,label,x,y,w,h,options)=>ops.push({k:'s',name,label,x,y,w,h,options});
 const R=(name,value,label,x,y,title)=>ops.push({k:'r',name,value,label,x,y,title});
 const C=(name,label,x,y)=>ops.push({k:'c',name,label,x,y});
 // Foto-knap: top = afstand fra sidens top (pt). no = punktnummer (fx 1.1 eller E1), auto = feltet der får bilagsnumre.
-const PHOTO_SLOTS=[];
 const P=(key,no,title,top,auto)=>{const o={k:'p',key,no,title,x:505,top,auto};ops.push(o);PHOTO_SLOTS.push(o);};
-function header(p,title,sub){
+// Skjul-knap pr. punkt (vises kun i browseren, ikke i PDF'en).
+const Hd=(key,no,title,top)=>ops.push({k:'h',key,no,title,x:505,top});
+// Alle punkter (også skjulte) – bruges til at bevare fotos og til listen over skjulte punkter.
+const ALL_ITEMS=[];
+GROUPS.slice(0,6).forEach(([g,items],gi)=>items.forEach((t,i)=>ALL_ITEMS.push({key:`p${gi+1}_punkt${i+1}`,no:`${gi+1}.${i+1}`,title:t})));
+const ALL_PHOTO_KEYS=new Set([...ALL_ITEMS.map(i=>i.key),'eget_punkt1','eget_punkt2']);
+function header(title,sub){
   ops.push({k:'bar'},{k:'logo'});
   T(38,H-51,'EJENDOMSINSPEKTION',17,'blue',true);
   T(38,H-72,'Visuelt tilsyn af bygning og udearealer',9,'muted');
@@ -517,55 +542,62 @@ function header(p,title,sub){
   T(38,H-145,sub,9,'muted');
   L(38,44,W-38);
   T(38,29,'Forenede Service | Inspektion og opfølgning',8,'muted');
-  T(W-99,29,`Side ${p} af 7`,8,'muted');
-}
-function identity(p){
-  T(38,675,'Ejendom / adresse',9,'muted');F(`p${p}_ejendom`,'Ejendom / adresse',38,645,345,22,false,'ejendom');
-  T(397,675,'Dato',9,'muted');F(`p${p}_dato`,'Dato',397,645,160,22,false,'dato');
+  pageNoOps.push(T(W-99,29,'',8,'muted')); // sidetal sættes, når alle sider er bygget
 }
 const OPTS=[['OK','OK',68],['Handling','Handling',155],['Ikke_relevant','Ikke relevant',269],['Ikke_besigtiget','Ikke besigtiget',402]];
+const WEATHER=['','Sol','Overskyet','Regn','Sne'];
 function item(p,i,title,y,step,compact){
-  const no=`${p}.${i}`;
+  const no=`${p}.${i}`,key=`p${p}_punkt${i}`;
   T(38,y,no,10,'blue',true);T(68,y,title,10);
+  Hd(key,no,title,H-y-9);
   const sy=y-(compact?26:32);
-  for(const [v,l,x] of OPTS)R(`p${p}_punkt${i}_status`,v,l,x,sy-1,title);
+  for(const [v,l,x] of OPTS)R(`${key}_status`,v,l,x,sy-1,title);
   if(compact){
-    T(68,sy-15,'Bemærkning / placering',8,'muted');F(`p${p}_punkt${i}_note`,`${no} ${title} – bemærkning`,68,sy-42,365,23);
-    T(446,sy-15,'Foto / bilag nr.',8,'muted');F(`p${p}_punkt${i}_foto`,`${no} ${title} – foto / bilag nr.`,446,sy-42,111,23);
-    P(`p${p}_punkt${i}`,no,title,H-(sy-5),`p${p}_punkt${i}_foto`);
+    T(68,sy-15,'Bemærkning / placering',8,'muted');F(`${key}_note`,`${no} ${title} – bemærkning`,68,sy-42,365,23);
+    T(446,sy-15,'Foto / bilag nr.',8,'muted');F(`${key}_foto`,`${no} ${title} – foto / bilag nr.`,446,sy-42,111,23);
+    P(key,no,title,H-(sy-5),`${key}_foto`);
   }else{
-    T(68,sy-18,'Bemærkning / præcis placering',8,'muted');F(`p${p}_punkt${i}_note`,`${no} ${title} – bemærkning`,68,sy-53,365,30,true);
-    T(446,sy-18,'Foto / bilag nr.',8,'muted');F(`p${p}_punkt${i}_foto`,`${no} ${title} – foto / bilag nr.`,446,sy-53,111,30);
-    P(`p${p}_punkt${i}`,no,title,H-(sy-11.5),`p${p}_punkt${i}_foto`);
+    T(68,sy-18,'Bemærkning / præcis placering',8,'muted');F(`${key}_note`,`${no} ${title} – bemærkning`,68,sy-53,365,30,true);
+    T(446,sy-18,'Foto / bilag nr.',8,'muted');F(`${key}_foto`,`${no} ${title} – foto / bilag nr.`,446,sy-53,111,30);
+    P(key,no,title,H-(sy-11.5),`${key}_foto`);
     L(38,y-step+10,557);
   }
 }
-GROUPS.slice(0,6).forEach(([title,items],idx)=>{
-  const p=idx+1;newPage();
-  header(p,title,'Vælg én status pr. punkt. Udfyld bemærkninger ved forhold, der kræver opfølgning.');
-  identity(p);
-  let start=620,step=p===6?92:108;
-  if(p===1){
-    T(38,626,'Inspektør',9,'muted');F('inspektoer','Inspektør',38,599,250);
-    T(304,626,'Vejr / seneste regn',9,'muted');F('vejr','Vejr / seneste regn',304,599,253);
-    T(38,580,'Kontrollér kun fra sikre, tilgængelige observationssteder.',9,'muted');
-    start=555;step=119;
+function buildLayout(){
+  pages=[];PHOTO_SLOTS.length=0;pageNoOps.length=0;
+  GROUPS.slice(0,6).forEach(([title,items],idx)=>{
+    const p=idx+1;
+    const visible=items.map((t,i)=>({t,i:i+1})).filter(x=>!hidden.has(`p${p}_punkt${x.i}`));
+    if(p>1&&!visible.length)return; // afsnit uden synlige punkter udelades
+    newPage();
+    header(title,'Vælg én status pr. punkt. Udfyld bemærkninger ved forhold, der kræver opfølgning.');
+    let start=650,step=p===6?92:108;
+    if(p===1){
+      // Ejendom, dato, inspektør og vejr står kun på første side.
+      T(38,675,'Ejendom / adresse',9,'muted');F('p1_ejendom','Ejendom / adresse',38,645,345);
+      T(397,675,'Dato',9,'muted');F('p1_dato','Dato',397,645,160);
+      T(38,626,'Inspektør',9,'muted');F('inspektoer','Inspektør',38,599,250);
+      T(304,626,'Vejr',9,'muted');S('vejr','Vejr',304,599,253,22,WEATHER);
+      T(38,580,'Kontrollér kun fra sikre, tilgængelige observationssteder.',9,'muted');
+      start=555;step=119;
+    }
+    if(!visible.length)T(68,start,'Alle punkter i dette afsnit er skjult.',9,'muted');
+    visible.forEach((x,j)=>item(p,x.i,x.t,start-j*step,step,p===6));
+  });
+  newPage();
+  header('Egne punkter og opfølgning','Supplér listen, og saml de forhold, der skal håndteres efter rundgangen.');
+  [650,545].forEach((y,k)=>{const i=k+1;
+    T(38,y,`Eget punkt ${i} - beskrivelse og placering`,9,'muted');F(`eget_punkt${i}`,`Eget punkt ${i} – beskrivelse og placering`,38,y-42,519,34,true);
+    T(38,y-59,'Handling / ansvarlig / frist / foto nr.',8,'muted');F(`eget_opfoelgning${i}`,`Eget punkt ${i} – handling / ansvarlig / frist / foto nr.`,38,y-87,519,22);
+    P(`eget_punkt${i}`,`E${i}`,`Eget punkt ${i}`,H-(y-50),null);
+  });
+  T(38,397,'Samlet opfølgning',12,'blue',true);
+  for(const [label,name,y] of [['Akutte forhold og straksindsats','akutte_forhold',374],['Opgaver - næste handling, ansvarlig og frist','opgaver_ansvar_frist',290],['Ikke besigtigede områder - aftale om senere kontrol','ikke_besigtiget_opfoelgning',206]]){
+    T(38,y,label,9,'muted');F(name,label,38,y-64,519,56,true);
   }
-  items.forEach((t,i)=>item(p,i+1,t,start-i*step,step,p===6));
-});
-newPage();
-header(7,'Egne punkter og opfølgning','Supplér listen, og saml de forhold, der skal håndteres efter rundgangen.');
-identity(7);
-[615,510].forEach((y,k)=>{const i=k+1;
-  T(38,y,`Eget punkt ${i} - beskrivelse og placering`,9,'muted');F(`eget_punkt${i}`,`Eget punkt ${i} – beskrivelse og placering`,38,y-42,519,34,true);
-  T(38,y-59,'Handling / ansvarlig / frist / foto nr.',8,'muted');F(`eget_opfoelgning${i}`,`Eget punkt ${i} – handling / ansvarlig / frist / foto nr.`,38,y-87,519,22);
-  P(`eget_punkt${i}`,`E${i}`,`Eget punkt ${i}`,H-(y-50),null);
-});
-T(38,397,'Samlet opfølgning',12,'blue',true);
-for(const [label,name,y] of [['Akutte forhold og straksindsats','akutte_forhold',374],['Opgaver - næste handling, ansvarlig og frist','opgaver_ansvar_frist',290],['Ikke besigtigede områder - aftale om senere kontrol','ikke_besigtiget_opfoelgning',206]]){
-  T(38,y,label,9,'muted');F(name,label,38,y-64,519,56,true);
+  for(const [name,label,y] of [['akut_videregivet','Akutte forhold er håndteret eller videregivet',122],['opgaver_fordelt','Opgaver er fordelt med ansvarlig og frist',99],['billeder_reference','Fotos er nummereret og vedlagt særskilt',76]])C(name,label,38,y-2);
+  pageNoOps.forEach((o,i)=>{o.s=`Side ${i+1} af ${pageNoOps.length}`;});
 }
-for(const [name,label,y] of [['akut_videregivet','Akutte forhold er håndteret eller videregivet',122],['opgaver_fordelt','Opgaver er fordelt med ansvarlig og frist',99],['billeder_reference','Fotos er nummereret og vedlagt særskilt',76]])C(name,label,38,y-2);
 
 // ---------- Visning i browseren ----------
 const sheets=document.getElementById('sheets');
@@ -583,7 +615,6 @@ function renderDom(){
       else if(o.k==='f'){
         const f=add(o.multi?'textarea':'input','f',{left:o.x+'pt',top:(H-o.y-o.h)+'pt',width:o.w+'pt',height:o.h+'pt'},{name:o.name,title:o.label});
         if(o.multi)f.maxLength=2000;else{f.type='text';f.maxLength=180;}
-        if(o.sync)f.dataset.sync=o.sync;
         f.setAttribute('aria-label',o.label);
       }else if(o.k==='r'){
         const id=o.name+'_'+o.value;
@@ -592,6 +623,13 @@ function renderDom(){
       }else if(o.k==='c'){
         add('input','check',{left:o.x+'pt',top:(H-o.y-12)+'pt'},{type:'checkbox',name:o.name,id:o.name,title:o.label});
         text(o.x+20,o.y+2,o.label,9,'ink',false,'label').htmlFor=o.name;
+      }else if(o.k==='s'){
+        const f=add('select','f',{left:o.x+'pt',top:(H-o.y-o.h)+'pt',width:o.w+'pt',height:o.h+'pt'},{name:o.name,title:o.label});
+        for(const v of o.options){const op=document.createElement('option');op.value=v;op.textContent=v||'Vælg …';f.append(op);}
+        f.setAttribute('aria-label',o.label);
+      }else if(o.k==='h'){
+        const b=add('button','hide-btn',{left:o.x+'pt',top:o.top+'pt'},{type:'button',textContent:'Skjul ×'});
+        b.dataset.hide=o.key;b.setAttribute('aria-label',`Skjul punkt ${o.no} ${o.title}`);
       }else if(o.k==='p'){
         const b=add('button','photo-btn',{left:o.x+'pt',top:o.top+'pt'},{type:'button',textContent:'+ Foto'});
         b.dataset.photo=o.key;b.setAttribute('aria-label',`Fotos til ${o.no} ${o.title}`);
@@ -599,11 +637,10 @@ function renderDom(){
     }
   }
 }
-renderDom();
 
 // ---------- Data: læses fra og skrives til selve filen ----------
 const status=document.getElementById('status');
-const controls=()=>Array.from(sheets.querySelectorAll('input,textarea'));
+const controls=()=>Array.from(sheets.querySelectorAll('input,textarea,select'));
 // Fotos pr. linje: {nøgle: [{data, w, h, name}]}. Ligger i filens data under _fotos.
 const MAX_PHOTOS=2;
 let photos={};
@@ -611,7 +648,7 @@ function collect(){const d={};for(const c of controls()){if(c.type==='radio'){if
   const f={};for(const [k,list] of Object.entries(photos))if(list.length)f[k]=list;if(Object.keys(f).length)d._fotos=f;return d;}
 function apply(d){for(const c of controls()){const v=d[c.name];if(c.type==='radio')c.checked=v===c.value;else if(c.type==='checkbox')c.checked=v===true;else c.value=typeof v==='string'?v:'';}
   photos={};const src=d._fotos&&typeof d._fotos==='object'?d._fotos:{};
-  for(const s of PHOTO_SLOTS){const list=Array.isArray(src[s.key])?src[s.key]:[];photos[s.key]=list.filter(p=>p&&typeof p.data==='string'&&/^data:image\/(jpeg|png);base64,/.test(p.data)&&p.w>0&&p.h>0).slice(0,MAX_PHOTOS);}
+  for(const key of ALL_PHOTO_KEYS){const list=Array.isArray(src[key])?src[key]:[];photos[key]=list.filter(p=>p&&typeof p.data==='string'&&/^data:image\/(jpeg|png);base64,/.test(p.data)&&p.w>0&&p.h>0).slice(0,MAX_PHOTOS);}
   refreshPhotoButtons();}
 const slotOf=key=>PHOTO_SLOTS.find(s=>s.key===key);
 const photoNo=(slot,i)=>`${slot.no}.${i+1}`;
@@ -619,13 +656,41 @@ const autoText=slot=>(photos[slot.key]||[]).map((_,i)=>'Foto '+photoNo(slot,i)).
 function refreshPhotoButtons(){for(const b of sheets.querySelectorAll('[data-photo]')){const n=(photos[b.dataset.photo]||[]).length;b.textContent=n?`Fotos (${n})`:'+ Foto';b.classList.toggle('has',n>0);}}
 // Sæt bilagsnumre i "Foto / bilag nr." – men kun hvis feltet er tomt eller kun indeholder tidligere automatiske numre.
 function updateAutoField(slot,before){if(!slot.auto)return;const f=sheets.querySelector(`[name="${slot.auto}"]`);if(!f)return;const v=f.value.trim();if(!v||v===before)f.value=autoText(slot);}
+// Værdier for felter, der ikke vises lige nu (skjulte punkter), gemmes her, så de ikke går tabt.
+let values={};
+function snapshot(){for(const c of controls())delete values[c.name];Object.assign(values,collect());values._skjult=[...hidden];return values;}
+const today=()=>{const d=new Date();return`${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`;};
+function setToday(){const f=sheets.querySelector('[name="p1_dato"]');if(f&&!f.value)f.value=today();}
+function rebuild(){const keep=snapshot();buildLayout();renderDom();apply(keep);refreshHiddenButton();fit();}
+const hiddenBtn=document.getElementById('show-hidden'),hiddenDlg=document.getElementById('hidden-dialog');
+function refreshHiddenButton(){hiddenBtn.hidden=!hidden.size;hiddenBtn.textContent=`Skjulte punkter (${hidden.size})`;}
+function showHiddenList(){
+  const ul=document.getElementById('hidden-list');ul.replaceChildren();
+  for(const it of ALL_ITEMS.filter(i=>hidden.has(i.key))){
+    const li=document.createElement('li');const t=document.createElement('span');t.textContent=`${it.no} ${it.title}`;
+    const b=document.createElement('button');b.type='button';b.textContent='Vis';
+    b.onclick=()=>{hidden.delete(it.key);dirty=true;rebuild();hidden.size?showHiddenList():hiddenDlg.close();};
+    li.append(t,b);ul.append(li);
+  }
+  if(!hiddenDlg.open)hiddenDlg.showModal();
+}
+hiddenBtn.onclick=showHiddenList;
+document.getElementById('show-all').onclick=()=>{hidden.clear();dirty=true;rebuild();hiddenDlg.close();};
+document.getElementById('hidden-close').onclick=()=>hiddenDlg.close();
+function hasContent(key){const v=snapshot();return !!(v[`${key}_status`]||v[`${key}_note`]||v[`${key}_foto`]||(photos[key]||[]).length);}
+sheets.addEventListener('click',e=>{
+  const b=e.target.closest('[data-hide]');if(!b)return;const key=b.dataset.hide;
+  if(hasContent(key)&&!confirm("Punktet har udfyldte oplysninger. De bevares, men kommer ikke med i PDF'en, så længe punktet er skjult. Skjul punktet?"))return;
+  hidden.add(key);dirty=true;rebuild();
+});
 let embedded={};
 try{const d=JSON.parse(document.getElementById('form-data').textContent||'{}');if(d&&typeof d==='object'&&!Array.isArray(d))embedded=d;}catch(e){}
-apply(embedded);
+if(Array.isArray(embedded._skjult))for(const k of embedded._skjult)if(ALL_ITEMS.some(i=>i.key===k))hidden.add(k);
+buildLayout();renderDom();apply(embedded);refreshHiddenButton();setToday();
 if(Object.keys(embedded).length)status.textContent='Skemaet indeholder udfyldte data fra filen.';
 
 let dirty=false,leaving=false;
-sheets.addEventListener('input',e=>{dirty=true;const s=e.target.dataset.sync;if(s)for(const o of sheets.querySelectorAll(`[data-sync="${s}"]`))if(o!==e.target)o.value=e.target.value;});
+sheets.addEventListener('input',()=>{dirty=true;});
 sheets.addEventListener('change',()=>{dirty=true;});
 // Klik på et valgt statusfelt fjerner valget igen.
 const radioOf=t=>t.classList&&t.classList.contains('radio')?t:(t.htmlFor?document.getElementById(t.htmlFor):null);
@@ -640,7 +705,7 @@ function openPicker(slot){currentSlot=slot;picker.value='';picker.click();}
 function showDialog(slot){
   currentSlot=slot;const list=photos[slot.key]||[];
   document.getElementById('photo-title').textContent=`Fotos – ${slot.no} ${slot.title}`;
-  document.getElementById('photo-sub').textContent=`${list.length} af ${MAX_PHOTOS} fotos. Fotos kommer med som bilag bagerst i PDF'en og i HTML-filen.`;
+  document.getElementById('photo-sub').textContent=`${list.length} af ${MAX_PHOTOS} fotos. Fotos kommer med som bilag bagerst i PDF'en.`;
   const box=document.getElementById('thumbs');box.replaceChildren();
   list.forEach((p,i)=>{const fig=document.createElement('figure');fig.className='thumb';const img=document.createElement('img');img.src=p.data;img.alt=`Foto ${photoNo(slot,i)}`;
     const cap=document.createElement('figcaption');const t=document.createElement('span');t.textContent=`Foto ${photoNo(slot,i)}`;const rm=document.createElement('button');rm.type='button';rm.textContent='Fjern';
@@ -697,7 +762,7 @@ async function buildPdf(){
       else if(o.k==='logo')doc.addImage(LOGO,'PNG',W-206,41,168,60);
       else if(o.k==='t'){font(o.size,o.bold,o.color);doc.text(o.s,o.x,H-o.y);}
       else if(o.k==='l'){doc.setDrawColor(COLORS.line);doc.setLineWidth(.75);doc.line(o.x1,H-o.y,o.x2,H-o.y);}
-      else if(o.k==='f'){
+      else if(o.k==='f'||o.k==='s'){ // 's' = rullemenu (vejr) – vises som et almindeligt felt med den valgte værdi
         const top=H-o.y-o.h;doc.setDrawColor(COLORS.line);doc.setLineWidth(.7);doc.rect(o.x,top,o.w,o.h,'S');
         const v=(d[o.name]||'').replace(/\r/g,'');if(!v)continue;
         let size=10,lines;
@@ -805,7 +870,7 @@ async function prepare(){
   }finally{btns.forEach(b=>b.disabled=false);}
 }
 document.getElementById('send-pdf').onclick=prepare;
-document.getElementById('clear').onclick=()=>{if(!confirm('Ryd alle felter og fotos i skemaet?'))return;apply({});dirty=false;status.textContent='Skemaet er ryddet.';};
+document.getElementById('clear').onclick=()=>{if(!confirm('Ryd alle felter og fotos i skemaet? Skjulte punkter vises igen.'))return;values={};hidden.clear();buildLayout();renderDom();apply({});refreshHiddenButton();setToday();fit();dirty=false;status.textContent='Skemaet er ryddet.';};
 
 // Skalér A4-siderne ned på smalle skærme (mobil/tablet).
 function fit(){const pw=W*96/72,avail=document.documentElement.clientWidth-16;sheets.style.zoom=avail<pw?(avail/pw).toFixed(3):'';}
