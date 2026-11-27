@@ -43,6 +43,15 @@ label.t{cursor:pointer}
 .hide-btn:hover{color:var(--ink);border-color:var(--muted)}
 select.f{appearance:auto;padding:1pt 2pt}
 #hidden-list{list-style:none;margin:0 0 16px;padding:0;max-height:50vh;overflow:auto}
+#pb-list{list-style:none;margin:0 0 14px;padding:0;max-height:30vh;overflow:auto}
+#pb-list li{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:14px}
+.pb-state{color:var(--muted);white-space:nowrap}.pb-state.ok{color:var(--green);font-weight:bold}
+.pb-form{display:grid;gap:8px;margin:0 0 12px}
+.pb-form[hidden]{display:none}
+.pb-form label{display:grid;gap:4px;font-size:13px;font-weight:bold}
+.pb-form input,.pb-form select{font:inherit;font-size:16px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;color:var(--ink);background:#fff;width:100%}
+#pb-user{color:var(--muted);font-size:13px;margin:0}
+#pb-msg{color:#a3392f;font-size:13px;margin:0 0 12px;min-height:1em}
 #hidden-list li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
 .photo-btn:focus-visible{outline:2px solid #67a8b9;outline-offset:2px}
 dialog.panel{width:min(92vw,640px);border:1px solid var(--line);border-radius:12px;padding:20px;color:var(--ink);font-size:14px}
@@ -70,7 +79,7 @@ dialog.panel button:disabled{opacity:.5;cursor:default}
   <button class="primary" id="send-pdf" type="button">Lav PDF</button>
   <button id="clear" type="button">Ryd skema</button>
   <button id="show-hidden" type="button" hidden>Skjulte punkter (0)</button>
-  <span class="ver">Version 11.11.2026 (3)</span>
+  <span class="ver">Version 27.11.2026</span>
   <span class="status" id="status" role="status"></span>
 </div>
 <div id="sheets"></div>
@@ -88,6 +97,28 @@ dialog.panel button:disabled{opacity:.5;cursor:default}
   <p class="sub" id="send-sub"></p>
   <p id="send-note" role="alert"></p>
   <div class="dlg-actions" id="send-actions"></div>
+</dialog>
+<dialog id="pb-dialog" class="panel" aria-labelledby="pb-title">
+  <h2 id="pb-title">Opret opgaver i Propbinder</h2>
+  <p class="sub" id="pb-sub"></p>
+  <ul id="pb-list"></ul>
+  <form id="pb-login" class="pb-form" autocomplete="on">
+    <label>Propbinder e-mail<input id="pb-email" type="email" autocomplete="username" required></label>
+    <label>Adgangskode<input id="pb-password" type="password" autocomplete="current-password" required></label>
+    <div class="dlg-actions"><button type="submit" class="primary" id="pb-login-btn">Log ind i Propbinder</button></div>
+  </form>
+  <div id="pb-setup" class="pb-form" hidden>
+    <p id="pb-user"></p>
+    <label>Søg ejendom<input id="pb-search" type="search" placeholder="Nummer eller navn"></label>
+    <label>Ejendom i Propbinder<select id="pb-property"></select></label>
+    <label>Type<select id="pb-type"></select></label>
+  </div>
+  <p id="pb-msg" role="alert"></p>
+  <div class="dlg-actions">
+    <button type="button" class="primary" id="pb-create" disabled>Opret opgaver og lav PDF</button>
+    <button type="button" id="pb-skip">Kun PDF</button>
+    <button type="button" id="pb-cancel">Annuller</button>
+  </div>
 </dialog>
 <dialog id="hidden-dialog" class="panel" aria-labelledby="hidden-title">
   <h2 id="hidden-title">Skjulte punkter</h2>
@@ -515,7 +546,8 @@ const W=595.276,H=841.89;
 const COLORS={blue:'#26677D',green:'#3C795F',ink:'#243B43',muted:'#597078',line:'#CAD7DB'};
 
 // ---------- Layout (samme koordinater som PDF-generatoren; y måles fra bunden i pt) ----------
-// Layoutet bygges om, når punkter skjules eller vises, så de resterende punkter rykker op.
+// Layoutet bygges om, når punkter skjules/vises eller "Opgave" slås til/fra. Punkterne flyder ned ad siden,
+// og et punkt, der ikke kan være på siden, flyttes til en fortsættelsesside.
 let pages=[],ops;
 const PHOTO_SLOTS=[],pageNoOps=[];
 const hidden=new Set(); // nøgler som 'p1_punkt3' for skjulte punkter
@@ -534,6 +566,7 @@ const Hd=(key,no,title,top)=>ops.push({k:'h',key,no,title,x:505,top});
 const ALL_ITEMS=[];
 GROUPS.slice(0,6).forEach(([g,items],gi)=>items.forEach((t,i)=>ALL_ITEMS.push({key:`p${gi+1}_punkt${i+1}`,no:`${gi+1}.${i+1}`,title:t})));
 const ALL_PHOTO_KEYS=new Set([...ALL_ITEMS.map(i=>i.key),'eget_punkt1','eget_punkt2']);
+const SUB='Vælg én status pr. punkt. Udfyld bemærkninger ved forhold, der kræver opfølgning.';
 function header(title,sub){
   ops.push({k:'bar'},{k:'logo'});
   T(38,H-51,'EJENDOMSINSPEKTION',17,'blue',true);
@@ -545,33 +578,41 @@ function header(title,sub){
   pageNoOps.push(T(W-99,29,'',8,'muted')); // sidetal sættes, når alle sider er bygget
 }
 const OPTS=[['OK','OK',68],['Handling','Handling',155],['Ikke_relevant','Ikke relevant',269],['Ikke_besigtiget','Ikke besigtiget',402]];
+const STATUS_LABEL=Object.fromEntries(OPTS.map(([v,l])=>[v,l]));
 const WEATHER=['','Sol','Overskyet','Regn','Sne'];
-function item(p,i,title,y,step,compact){
-  const no=`${p}.${i}`,key=`p${p}_punkt${i}`;
+const taskExtra=compact=>compact?32:36; // ekstra højde, når opgavetitlen vises
+// Et punkt. task = "Opgave" er slået til, så feltet Opgavetitel vises over bemærkningen.
+function item(p,i,title,y,step,compact,task){
+  const no=`${p}.${i}`,key=`p${p}_punkt${i}`,t=task?taskExtra(compact):0;
   T(38,y,no,10,'blue',true);T(68,y,title,10);
   Hd(key,no,title,H-y-9);
   const sy=y-(compact?26:32);
   for(const [v,l,x] of OPTS)R(`${key}_status`,v,l,x,sy-1,title);
+  C(`${key}_opgave`,'Opgave',488,sy-1); // kan vælges sammen med en status
+  if(task){
+    T(68,sy-(compact?15:18),'Opgavetitel – oprettes i Propbinder',8,'blue');
+    F(`${key}_opgave_titel`,`${no} ${title} – opgavetitel`,68,sy-(compact?36:41),489,compact?17:18);
+  }
+  const s=sy-t;
   if(compact){
-    T(68,sy-15,'Bemærkning / placering',8,'muted');F(`${key}_note`,`${no} ${title} – bemærkning`,68,sy-42,365,23);
-    T(446,sy-15,'Foto / bilag nr.',8,'muted');F(`${key}_foto`,`${no} ${title} – foto / bilag nr.`,446,sy-42,111,23);
-    P(key,no,title,H-(sy-5),`${key}_foto`);
+    T(68,s-15,'Bemærkning / placering',8,'muted');F(`${key}_note`,`${no} ${title} – bemærkning`,68,s-42,365,23);
+    T(446,s-15,'Foto / bilag nr.',8,'muted');F(`${key}_foto`,`${no} ${title} – foto / bilag nr.`,446,s-42,111,23);
+    P(key,no,title,H-(s-5),`${key}_foto`);
   }else{
-    T(68,sy-18,'Bemærkning / præcis placering',8,'muted');F(`${key}_note`,`${no} ${title} – bemærkning`,68,sy-53,365,30,true);
-    T(446,sy-18,'Foto / bilag nr.',8,'muted');F(`${key}_foto`,`${no} ${title} – foto / bilag nr.`,446,sy-53,111,30);
-    P(key,no,title,H-(sy-11.5),`${key}_foto`);
-    L(38,y-step+10,557);
+    T(68,s-18,'Bemærkning / præcis placering',8,'muted');F(`${key}_note`,`${no} ${title} – bemærkning`,68,s-53,365,30,true);
+    T(446,s-18,'Foto / bilag nr.',8,'muted');F(`${key}_foto`,`${no} ${title} – foto / bilag nr.`,446,s-53,111,30);
+    P(key,no,title,H-(s-11.5),`${key}_foto`);
+    L(38,y-step-t+10,557);
   }
 }
 function buildLayout(){
   pages=[];PHOTO_SLOTS.length=0;pageNoOps.length=0;
   GROUPS.slice(0,6).forEach(([title,items],idx)=>{
-    const p=idx+1;
+    const p=idx+1,compact=p===6;
     const visible=items.map((t,i)=>({t,i:i+1})).filter(x=>!hidden.has(`p${p}_punkt${x.i}`));
     if(p>1&&!visible.length)return; // afsnit uden synlige punkter udelades
-    newPage();
-    header(title,'Vælg én status pr. punkt. Udfyld bemærkninger ved forhold, der kræver opfølgning.');
-    let start=650,step=p===6?92:108;
+    newPage();header(title,SUB);
+    let y=650,step=compact?92:108;
     if(p===1){
       // Ejendom, dato, inspektør og vejr står kun på første side.
       T(38,675,'Ejendom / adresse',9,'muted');F('p1_ejendom','Ejendom / adresse',38,645,345);
@@ -579,10 +620,16 @@ function buildLayout(){
       T(38,626,'Inspektør',9,'muted');F('inspektoer','Inspektør',38,599,250);
       T(304,626,'Vejr',9,'muted');S('vejr','Vejr',304,599,253,22,WEATHER);
       T(38,580,'Kontrollér kun fra sikre, tilgængelige observationssteder.',9,'muted');
-      start=555;step=119;
+      y=555;step=119;
     }
-    if(!visible.length)T(68,start,'Alle punkter i dette afsnit er skjult.',9,'muted');
-    visible.forEach((x,j)=>item(p,x.i,x.t,start-j*step,step,p===6));
+    if(!visible.length)T(68,y,'Alle punkter i dette afsnit er skjult.',9,'muted');
+    for(const x of visible){
+      const task=values[`p${p}_punkt${x.i}_opgave`]===true;
+      const h=step+(task?taskExtra(compact):0);
+      if(y-h+10<50){newPage();header(`${title} (fortsat)`,SUB);y=650;} // ikke plads – videre på ny side
+      item(p,x.i,x.t,y,step,compact,task);
+      y-=h;
+    }
   });
   newPage();
   header('Egne punkter og opfølgning','Supplér listen, og saml de forhold, der skal håndteres efter rundgangen.');
@@ -677,7 +724,7 @@ function showHiddenList(){
 hiddenBtn.onclick=showHiddenList;
 document.getElementById('show-all').onclick=()=>{hidden.clear();dirty=true;rebuild();hiddenDlg.close();};
 document.getElementById('hidden-close').onclick=()=>hiddenDlg.close();
-function hasContent(key){const v=snapshot();return !!(v[`${key}_status`]||v[`${key}_note`]||v[`${key}_foto`]||(photos[key]||[]).length);}
+function hasContent(key){const v=snapshot();return !!(v[`${key}_status`]||v[`${key}_opgave`]||v[`${key}_note`]||v[`${key}_foto`]||(photos[key]||[]).length);}
 sheets.addEventListener('click',e=>{
   const b=e.target.closest('[data-hide]');if(!b)return;const key=b.dataset.hide;
   if(hasContent(key)&&!confirm("Punktet har udfyldte oplysninger. De bevares, men kommer ikke med i PDF'en, så længe punktet er skjult. Skjul punktet?"))return;
@@ -686,7 +733,7 @@ sheets.addEventListener('click',e=>{
 let embedded={};
 try{const d=JSON.parse(document.getElementById('form-data').textContent||'{}');if(d&&typeof d==='object'&&!Array.isArray(d))embedded=d;}catch(e){}
 if(Array.isArray(embedded._skjult))for(const k of embedded._skjult)if(ALL_ITEMS.some(i=>i.key===k))hidden.add(k);
-buildLayout();renderDom();apply(embedded);refreshHiddenButton();setToday();
+values=Object.assign({},embedded);buildLayout();renderDom();apply(embedded);refreshHiddenButton();setToday();
 if(Object.keys(embedded).length)status.textContent='Skemaet indeholder udfyldte data fra filen.';
 
 let dirty=false,leaving=false;
@@ -829,6 +876,152 @@ async function buildPdf(){
   return doc.output('blob');
 }
 
+// ---------- Propbinder: opret opgaver for punkter med "Opgave" ----------
+// Samme fremgangsmåde som siden "Automatisk opgave oprettelse i Propbinder": Propbinders web-API kaldes
+// direkte fra browseren med inspektørens EGET login. Der ligger ingen adgangskode i skemaet, og login-nøglen
+// gemmes kun i hukommelsen, så længe siden er åben. Det er Propbinders interne web-API (ikke et dokumenteret
+// partner-API), så det kan ændre sig uden varsel.
+const PB_API='https://propbinder-api.azurewebsites.net/';
+const PB_STATUS_TODO='7cb83847-96ee-4567-8555-b9d770ff16c0'; // "Skal udføres"
+let pbBearer=null,pbMe=null,pbProps=[],pbLoaded=false;
+const pbDlg=document.getElementById('pb-dialog');
+async function pbApi(path,{method='GET',body}={}){
+  const r=await fetch(PB_API+path,{method,headers:{Accept:'application/json',...(pbBearer?{Authorization:pbBearer}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},body:body!==undefined?JSON.stringify(body):undefined});
+  const text=await r.text();
+  if(r.status===401||r.status===403){pbBearer=null;pbLoaded=false;const e=new Error('Du er ikke længere logget ind i Propbinder. Log ind igen.');e.auth=true;throw e;}
+  if(!r.ok)throw new Error(`Propbinder svarede ${r.status} på ${path.split('?')[0]}.`);
+  try{return text?JSON.parse(text):null;}catch(e){return text;}
+}
+// Opgaver = synlige punkter med "Opgave" slået til. _pb husker opgaver, der allerede er oprettet.
+function pbTasks(){
+  const v=snapshot(),done=v._pb||{};
+  return ALL_ITEMS.filter(it=>!hidden.has(it.key)&&v[`${it.key}_opgave`]===true).map(it=>({...it,
+    taskTitle:(v[`${it.key}_opgave_titel`]||'').trim(),note:(v[`${it.key}_note`]||'').trim(),
+    status:v[`${it.key}_status`]||'',foto:(v[`${it.key}_foto`]||'').trim(),created:done[it.key]||null}));
+}
+// Inspektionsdatoen (dd.mm.åååå) som frist. Er det i dag, bruges klokkeslættet nu, ellers kl. 12.
+function pbDue(){
+  const m=(info().date||'').match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/),now=new Date();
+  if(!m)return now;
+  const d=new Date(+m[3],+m[2]-1,+m[1],12,0,0);
+  return d.toDateString()===now.toDateString()?now:d;
+}
+function pbDescription(t){
+  const {date,inspector}=info();
+  const lines=[];if(t.note)lines.push(t.note,'');
+  lines.push(`Fra ejendomsinspektion${date?' '+date:''}${inspector?' ('+inspector+')':''}, punkt ${t.no} ${t.title}.`);
+  if(t.status)lines.push(`Status: ${STATUS_LABEL[t.status]||t.status}.`);
+  if(t.foto)lines.push(`Foto: ${t.foto} (se inspektionsrapporten).`);
+  return lines.join('\n');
+}
+function pbRenderList(tasks){
+  const ul=document.getElementById('pb-list');ul.replaceChildren();
+  for(const t of tasks){
+    const li=document.createElement('li');const a=document.createElement('span');a.textContent=`${t.no} ${t.taskTitle}`;
+    const b=document.createElement('span');b.className='pb-state';b.textContent=t.created?'✓ Oprettet':'Oprettes';if(t.created)b.classList.add('ok');
+    li.append(a,b);ul.append(li);
+  }
+}
+function pbMsg(t){document.getElementById('pb-msg').textContent=t||'';}
+// Forvælg den ejendom, hvis nummer eller navn står i "Ejendom / adresse".
+function pbGuessProperty(){
+  const a=(info().address||'').toLowerCase();if(!a)return '';
+  const byNo=pbProps.find(p=>p.number&&new RegExp(`(^|\\D)${p.number}(\\D|$)`).test(a));if(byNo)return byNo.id;
+  const byName=pbProps.find(p=>p.name&&(a.includes(p.name.toLowerCase())||p.name.toLowerCase().includes(a)));return byName?byName.id:'';
+}
+function pbFillProps(filter){
+  const sel=document.getElementById('pb-property'),keep=sel.value,f=(filter||'').trim().toLowerCase();
+  sel.replaceChildren(new Option('Vælg ejendom …',''));
+  for(const p of pbProps)if(!f||`${p.number} ${p.name}`.toLowerCase().includes(f)||p.id===keep)sel.append(new Option(`${p.number} · ${p.name}`,p.id));
+  sel.value=keep;
+}
+async function pbLoad(){
+  const [info_,users,types,list]=await Promise.all([
+    pbApi('api/WebSite/Company/User/UserInfo'),pbApi('api/Website/Company/User').catch(()=>[]),
+    pbApi('api/Activity/ActivityTypes'),pbApi('api/PropertyLease/GetPropertyList').catch(()=>[])]);
+  const id=info_.StakeholderId||info_.stakeholderId;
+  const self=(Array.isArray(users)?users:[]).find(u=>u.userId===id)||{};
+  pbMe={id,name:info_.Name||info_.name||self.name||'',departmentId:self.departmentId||null};
+  const tsel=document.getElementById('pb-type');tsel.replaceChildren(new Option('Vælg type …',''));
+  for(const t of (types||[]).map(t=>({id:t.id,name:String(t.name).trim()})).sort((a,b)=>a.name.localeCompare(b.name,'da')))tsel.append(new Option(t.name,t.id));
+  const pref=[...tsel.options].find(o=>/^Inspektøropgaver$/i.test(o.text));if(pref)tsel.value=pref.value;
+  pbProps=(list||[]).map(p=>({id:p.id,number:String(p.number||'').trim(),name:String(p.name||'').trim(),customerId:(p.propertyCustomer&&p.propertyCustomer.id)||null}))
+    .sort((a,b)=>a.number.localeCompare(b.number,'da',{numeric:true}));
+  pbFillProps('');document.getElementById('pb-property').value=pbGuessProperty();
+  document.getElementById('pb-user').textContent=pbMe.name?`Logget ind som ${pbMe.name}.`:'Logget ind.';
+  pbLoaded=true;
+}
+function pbShowStep(){
+  document.getElementById('pb-login').hidden=pbLoaded;
+  document.getElementById('pb-setup').hidden=!pbLoaded;
+  document.getElementById('pb-create').disabled=!pbLoaded;
+}
+// Kaldes af "Lav PDF". Returnerer true, hvis Propbinder-vinduet åbnes (så PDF'en laves bagefter).
+function pbStep(){
+  const tasks=pbTasks();if(!tasks.length)return false;
+  const missing=tasks.find(t=>!t.taskTitle);
+  if(missing){status.textContent=`Punkt ${missing.no} er markeret som Opgave, men mangler en opgavetitel.`;const f=sheets.querySelector(`[name="${missing.key}_opgave_titel"]`);if(f){f.scrollIntoView({block:'center'});f.focus();}return true;}
+  const todo=tasks.filter(t=>!t.created);
+  if(!todo.length)return false; // alle er allerede oprettet
+  document.getElementById('pb-sub').textContent=`${todo.length} ${todo.length===1?'opgave':'opgaver'} oprettes i Propbinder med status "Skal udføres", frist ${info().date||'i dag'} og tildelt dig. Derefter laves PDF'en.`;
+  pbRenderList(tasks);pbMsg('');pbShowStep();
+  if(!pbDlg.open)pbDlg.showModal();
+  return true;
+}
+document.getElementById('pb-login').addEventListener('submit',async e=>{
+  e.preventDefault();const btn=document.getElementById('pb-login-btn');btn.disabled=true;pbMsg('');
+  try{
+    const r=await fetch(PB_API+'api/Website/Login',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},
+      body:JSON.stringify({email:document.getElementById('pb-email').value.trim(),password:document.getElementById('pb-password').value})});
+    if(!r.ok)throw new Error(r.status===400||r.status===401||r.status===403?'Forkert e-mail eller adgangskode.':`Propbinder svarede ${r.status}. Prøv igen.`);
+    const login=await r.json();const raw=String(login&&login.bearer||'').trim().replace(/^Bearer\s+/i,'');
+    if(!raw)throw new Error('Propbinder returnerede intet login.');
+    pbBearer='Bearer '+raw;document.getElementById('pb-password').value='';
+    pbMsg('Henter ejendomme …');await pbLoad();pbMsg('');pbShowStep();
+  }catch(err){pbBearer=null;pbMsg(err.message||'Login fejlede.');}
+  finally{btn.disabled=false;}
+});
+document.getElementById('pb-search').addEventListener('input',e=>pbFillProps(e.target.value));
+document.getElementById('pb-cancel').onclick=()=>pbDlg.close();
+document.getElementById('pb-skip').onclick=()=>{pbDlg.close();prepare(true);};
+document.getElementById('pb-create').onclick=async()=>{
+  const propertyId=document.getElementById('pb-property').value,typeId=document.getElementById('pb-type').value;
+  if(!propertyId){pbMsg('Vælg ejendommen i Propbinder.');return;}
+  if(!typeId){pbMsg('Vælg en type.');return;}
+  const prop=pbProps.find(p=>p.id===propertyId);
+  const btns=pbDlg.querySelectorAll('button');btns.forEach(b=>b.disabled=true);
+  const due=pbDue().toISOString();let made=0;
+  try{
+    for(const t of pbTasks().filter(t=>!t.created)){
+      pbMsg(`Opretter ${t.no} ${t.taskTitle} …`);
+      const id=String(await pbApi('api/Activity',{method:'POST',body:{
+        subject:t.taskTitle,activityType:typeId,status:PB_STATUS_TODO,
+        customerId:prop.customerId||null,caseId:null,offerId:null,propertyId,propertyLeaseId:null,
+        dueDateTime:due,startDateTime:due,endDateTime:due,priorityId:null,
+        description:pbDescription(t),assignedToStakeholder:pbMe.id,
+        recurring:null,recurrance:null,priceGroupId:null,note:'',dvAccountPlanId:null,dvCategoryId:null,
+        departmentId:pbMe.departmentId,taskRecurrence:null,markAsInvoice:false,isNew:true,includeHolidays:false,
+        assetId:null,invoiceTypeId:null,activityInvoiceTypeId:null,invoiceCategoryId:null,markAsBillable:false}})).replace(/"/g,'');
+      if(!/^[0-9a-f-]{36}$/i.test(id))throw new Error('Propbinder returnerede ikke et opgave-id.');
+      values._pb={...(values._pb||{}),[t.key]:id};made++;dirty=true;
+      pbRenderList(pbTasks());
+    }
+    pbMsg('');pbDlg.close();
+    await prepare(true);
+    const total=Object.keys(values._pb||{}).length;
+    if(!status.textContent)status.textContent=`${total} ${total===1?'opgave':'opgaver'} oprettet i Propbinder.`;
+  }catch(err){
+    pbMsg((made?`${made} oprettet. `:'')+(err.message||'Oprettelsen fejlede.')+(err.auth?'':' Tryk "Opret opgaver" for at prøve resten igen.'));
+    if(err.auth)pbShowStep();
+  }finally{btns.forEach(b=>b.disabled=false);pbShowStep();}
+};
+// "Opgave" slået til/fra: byg layoutet om, så feltet Opgavetitel vises/skjules.
+sheets.addEventListener('change',e=>{
+  const n=e.target.name||'';if(!/_opgave$/.test(n))return;
+  const on=e.target.checked;rebuild();
+  if(on){const f=sheets.querySelector(`[name="${n}_titel"]`);if(f)f.focus({preventScroll:true});}
+});
+
 // ---------- Lav PDF og hent den ----------
 // Trin 1: "Lav PDF" danner filen. Trin 2: brugeren trykker selv på linket "Hent PDF".
 // Et rigtigt link, som brugeren trykker på, er det, Safari på iPad håndterer mest stabilt.
@@ -862,7 +1055,8 @@ function showReady(){
   const close=document.createElement('button');close.type='button';close.textContent='Luk';close.onclick=()=>sendDlg.close();box.append(close);
   if(!sendDlg.open)sendDlg.showModal();
 }
-async function prepare(){
+async function prepare(skipTasks){
+  if(!skipTasks&&!photoBusy&&pbStep())return; // opgaver oprettes først i Propbinder
   if(photoBusy){status.textContent='Vent – billederne behandles stadig …';return;}
   if(!info().address&&!confirm('Ejendom / adresse er ikke udfyldt. Vil du fortsætte alligevel?'))return;
   const btns=document.querySelectorAll('.toolbar button');btns.forEach(b=>b.disabled=true);
@@ -879,7 +1073,7 @@ async function prepare(){
     status.textContent='PDF\'en kunne ikke laves – '+errText(e);
   }finally{btns.forEach(b=>b.disabled=false);}
 }
-document.getElementById('send-pdf').onclick=prepare;
+document.getElementById('send-pdf').onclick=()=>prepare(false);
 document.getElementById('clear').onclick=()=>{if(!confirm('Ryd alle felter og fotos i skemaet? Skjulte punkter vises igen.'))return;values={};hidden.clear();buildLayout();renderDom();apply({});refreshHiddenButton();setToday();fit();dirty=false;status.textContent='Skemaet er ryddet.';};
 
 // Skalér A4-siderne ned på smalle skærme (mobil/tablet).

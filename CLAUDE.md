@@ -4,7 +4,7 @@ Projektviden til nye sessioner. Svar altid på dansk.
 
 ## Formål og teknologi
 - Udfyldeligt skema til visuelt tilsyn af bygning og udearealer for Forenede Service. Bruges af inspektører på iPad/iPhone (Safari) og pc (Edge/Chrome).
-- Den publicerede side er ÉN statisk fil: `index.html` (ca. 890 linjer / 440 KB). Ingen backend, ingen build, ingen npm, ingen eksterne kald.
+- Den publicerede side er ÉN statisk fil: `index.html` (ca. 1000 linjer / 450 KB). Ingen backend, ingen build, ingen npm. Eneste eksterne kald er Propbinder-API'et, og kun når inspektøren selv logger ind og opretter opgaver (se nedenfor).
 - PDF laves i browseren med jsPDF 2.5.1 (MIT), som er indlejret i `index.html` (de meget lange minificerede linjer ca. 104–476). Logoet er indlejret som base64-PNG (`const LOGO=...`).
 - Siden gemmer intet (ingen localStorage/IndexedDB). Udfyldt indhold og fotos forsvinder ved lukning/genindlæsning; der er en `beforeunload`-advarsel ved ugemte ændringer.
 
@@ -34,7 +34,14 @@ Projektviden til nye sessioner. Svar altid på dansk.
 - Adresse og dato kun på side 1 (felter `p1_ejendom`, `p1_dato`; `inspektoer`). Dato sættes til i dag (`setToday`).
 - Skjul-knap pr. punkt; skjulte punkter kommer ikke med i PDF'en (`hidden`, dialog "Skjulte punkter").
 - `buildPdf` – jsPDF (`unit:'pt'`, helvetica). `prepare` → `showReady` viser knapperne.
-- Versionsmærke i værktøjslinjen: `<span class="ver">Version 11.11.2026 (3)</span>` – opdatér ved ændringer.
+- Versionsmærke i værktøjslinjen: `<span class="ver">Version 27.11.2026</span>` – opdatér ved ændringer.
+
+## Opgaver i Propbinder (27.11.2026)
+- Hvert punkt har afkrydsningen "Opgave" (`pX_punktY_opgave`, kan vælges sammen med en status). Slået til → feltet `pX_punktY_opgave_titel` vises; `rebuild()` bygger layoutet om. `buildLayout` lader punkter flyde og flytter et punkt til en "(fortsat)"-side, hvis det ikke kan være der.
+- `prepare(false)` kalder `pbStep()`: mangler en opgave titel, stoppes der; ellers åbner `#pb-dialog` (login med inspektørens EGET Propbinder-login → ejendom forvalgt via `pbGuessProperty()` ud fra nummer/navn i adressen → type forvalgt "Inspektøropgaver"). "Opret opgaver og lav PDF" opretter med `POST api/Activity` (status "Skal udføres" `7cb83847-…`, frist = inspektionsdato, tildelt inspektøren, kunde = ejendommens kunde) og laver derefter PDF'en. "Kun PDF" springer over.
+- Oprettede opgaver huskes i `values._pb` (nøgle → opgave-id), så de ikke oprettes igen. Fejl midtvejs: kun de manglende oprettes ved nyt forsøg.
+- API: `https://propbinder-api.azurewebsites.net/` (Propbinders interne web-API, CORS `*`, samme som "Automatisk opgave oprettelse i Propbinder"). Bearer-token kun i hukommelsen (`pbBearer`). Læg ALDRIG brugernavn/adgangskode eller nøgler i siden. Partner-API-brugeren (apiuser) kan ikke oprette opgaver og bruges ikke.
+- Verificeret 27.11.2026 mod rigtig Propbinder på ejendom 00000 (pc). Test på ejendom 00000, aldrig på kundeejendomme.
 
 ## PDF-navn og iPad-deling (seneste commit)
 - PDF'en navngives efter ejendommen: `baseName()` renser `p1_ejendom` for `\ / : * ? " < > |`, trimmer og afkorter til 80 tegn; tom adresse → `Ejendomsinspektion.pdf`.
@@ -56,7 +63,7 @@ Projektviden til nye sessioner. Svar altid på dansk.
 - Projektet ligger i OneDrive ("Forenede A S") med mellemrum i stien – citér stier.
 - Filen er stor og har meget lange linjer: brug Grep/offset ved læsning; redigér ikke i jsPDF-blokken.
 - Behold `'use strict'`, fejlvisning i statuslinjen (`showErr`) – den bruges til fejlsøgning på iPad.
-- Siden må ikke hente noget udefra (jsPDF er indlejret netop derfor).
+- Siden må ikke hente scripts eller andre filer udefra (jsPDF er indlejret netop derfor). Propbinder-kaldene er den eneste undtagelse.
 - Commit-beskeder skrives på dansk og beskriver brugerens oplevelse.
 
 ## Git-regler
